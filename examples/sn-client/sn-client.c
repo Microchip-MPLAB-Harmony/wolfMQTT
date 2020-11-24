@@ -1,6 +1,6 @@
 /* sn-client.c
  *
- * Copyright (C) 2006-2018 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfMQTT.
  *
@@ -26,19 +26,19 @@
 
 #include "wolfmqtt/mqtt_client.h"
 
-#ifdef WOLFMQTT_SN
-
 #include "sn-client.h"
 #include "examples/mqttnet.h"
 
 /* Locals */
 static int mStopRead = 0;
 
+#ifdef WOLFMQTT_SN
+
 /* Configuration */
 /* Maximum size for network read/write callbacks. */
 #define MAX_BUFFER_SIZE 1024
 #define TEST_MESSAGE    "test"
-
+#define SHORT_TOPIC_NAME "s1"
 
 static int sn_message_cb(MqttClient *client, MqttMessage *msg,
     byte msg_new, byte msg_done)
@@ -99,7 +99,7 @@ int sn_test(MQTTCtx *mqttCtx)
     PRINTF("MQTT-SN Client: QoS %d", mqttCtx->qos);
 
     /* Initialize Network */
-    rc = SN_ClientNet_Init(&mqttCtx->net);
+    rc = SN_ClientNet_Init(&mqttCtx->net, mqttCtx);
     PRINTF("MQTT-SN Net Init: %s (%d)",
         MqttClient_ReturnCodeToString(rc), rc);
     if (rc != MQTT_CODE_SUCCESS) {
@@ -220,27 +220,75 @@ int sn_test(MQTTCtx *mqttCtx)
 
     {
         /* Publish Topic */
-        XMEMSET(&mqttCtx->publish, 0, sizeof(SN_Publish));
-        mqttCtx->publish.retain = 0;
-        mqttCtx->publish.qos = MQTT_QOS_1;//mqttCtx->qos;
-        mqttCtx->publish.duplicate = 0;
-        mqttCtx->publish.topic_type = SN_TOPIC_ID_TYPE_NORMAL;
-        mqttCtx->publish.topic_name = (char*)&topicID;
-        if (mqttCtx->publish.qos > MQTT_QOS_0) {
-            mqttCtx->publish.packet_id = mqtt_get_packetid();
+        XMEMSET(&mqttCtx->publishSN, 0, sizeof(SN_Publish));
+        mqttCtx->publishSN.retain = 0;
+        mqttCtx->publishSN.qos = mqttCtx->qos;
+        mqttCtx->publishSN.duplicate = 0;
+        mqttCtx->publishSN.topic_type = SN_TOPIC_ID_TYPE_NORMAL;
+        mqttCtx->publishSN.topic_name = (char*)&topicID;
+        if (mqttCtx->publishSN.qos > MQTT_QOS_0) {
+            mqttCtx->publishSN.packet_id = mqtt_get_packetid();
         }
         else {
-            mqttCtx->publish.packet_id = 0x00;
+            mqttCtx->publishSN.packet_id = 0x00;
         }
 
-        mqttCtx->publish.buffer = (byte*)TEST_MESSAGE;
-        mqttCtx->publish.total_len = (word16)XSTRLEN(TEST_MESSAGE);
+        mqttCtx->publishSN.buffer = (byte*)TEST_MESSAGE;
+        mqttCtx->publishSN.total_len = (word16)XSTRLEN(TEST_MESSAGE);
 
-        rc = SN_Client_Publish(&mqttCtx->client, &mqttCtx->publish);
+        rc = SN_Client_Publish(&mqttCtx->client, &mqttCtx->publishSN);
 
-        PRINTF("MQTT-SN Publish: topic id = %d, msg = \"%s\", rc = %d",
-            (word16)*mqttCtx->publish.topic_name, mqttCtx->publish.buffer,
-            mqttCtx->publish.return_code);
+        PRINTF("MQTT-SN Publish: topic id = %d, rc = %d\r\nPayload = %s",
+            (word16)*mqttCtx->publishSN.topic_name,
+                mqttCtx->publishSN.return_code,
+                mqttCtx->publishSN.buffer);
+        if (rc != MQTT_CODE_SUCCESS) {
+            goto disconn;
+        }
+    }
+
+    {
+        /* Short Topic Name Subscribe */
+        SN_Subscribe subscribe;
+        SN_Publish publish;
+
+        XMEMSET(&subscribe, 0, sizeof(SN_Subscribe));
+
+        subscribe.duplicate = 0;
+        subscribe.qos = MQTT_QOS_0;
+        subscribe.topic_type = SN_TOPIC_ID_TYPE_SHORT;
+        subscribe.topicNameId = SHORT_TOPIC_NAME;
+        subscribe.packet_id = mqtt_get_packetid();
+
+        PRINTF("MQTT-SN Subscribe: topic name = %s", subscribe.topicNameId);
+        rc = SN_Client_Subscribe(&mqttCtx->client, &subscribe);
+
+        PRINTF("....MQTT-SN Subscribe Ack: topic id = %d, rc = %d",
+                subscribe.subAck.topicId, subscribe.subAck.return_code);
+
+        /* Short Topic Name Publish */
+        XMEMSET(&publish, 0, sizeof(SN_Publish));
+        publish.retain = 0;
+        publish.qos = mqttCtx->qos;
+        publish.duplicate = 0;
+        publish.topic_type = SN_TOPIC_ID_TYPE_SHORT;
+        publish.topic_name = SHORT_TOPIC_NAME;
+        if (publish.qos > MQTT_QOS_0) {
+            publish.packet_id = mqtt_get_packetid();
+        }
+        else {
+            publish.packet_id = 0x00;
+        }
+
+        publish.buffer = (byte*)TEST_MESSAGE;
+        publish.total_len = (word16)XSTRLEN(TEST_MESSAGE);
+
+        rc = SN_Client_Publish(&mqttCtx->client, &publish);
+
+        PRINTF("MQTT-SN Publish: topic id = %d, rc = %d\r\nPayload = %s",
+            (word16)*publish.topic_name,
+            publish.return_code,
+            publish.buffer);
         if (rc != MQTT_CODE_SUCCESS) {
             goto disconn;
         }
@@ -272,20 +320,26 @@ int sn_test(MQTTCtx *mqttCtx)
 
                 /* Publish Topic */
                 mqttCtx->stat = WMQ_PUB;
-                XMEMSET(&mqttCtx->publish, 0, sizeof(MqttPublish));
-                mqttCtx->publish.retain = 0;
-                mqttCtx->publish.qos = mqttCtx->qos;
-                mqttCtx->publish.duplicate = 0;
-                mqttCtx->publish.topic_type = SN_TOPIC_ID_TYPE_NORMAL;
-                mqttCtx->publish.topic_name = (char*)&topicID;
-                mqttCtx->publish.packet_id = mqtt_get_packetid();
-                mqttCtx->publish.buffer = mqttCtx->rx_buf;
-                mqttCtx->publish.total_len = (word16)rc;
+                XMEMSET(&mqttCtx->publishSN, 0, sizeof(SN_Publish));
+                mqttCtx->publishSN.retain = 0;
+                mqttCtx->publishSN.qos = mqttCtx->qos;
+                mqttCtx->publishSN.duplicate = 0;
+                mqttCtx->publishSN.topic_type = SN_TOPIC_ID_TYPE_NORMAL;
+                mqttCtx->publishSN.topic_name = (char*)&topicID;
+                if (mqttCtx->publishSN.qos > MQTT_QOS_0) {
+                    mqttCtx->publishSN.packet_id = mqtt_get_packetid();
+                }
+                else {
+                    mqttCtx->publishSN.packet_id = 0x00;
+                }
+                mqttCtx->publishSN.buffer = mqttCtx->rx_buf;
+                mqttCtx->publishSN.total_len = (word16)rc;
                 rc = SN_Client_Publish(&mqttCtx->client,
-                       &mqttCtx->publish);
-                PRINTF("MQTT-SN Publish: topic id = %d, msg = \"%s\", rc = %d",
-                    (word16)*mqttCtx->publish.topic_name, mqttCtx->publish.buffer,
-                    mqttCtx->publish.return_code);
+                       &mqttCtx->publishSN);
+                PRINTF("MQTT-SN Publish: topic id = %d, rc = %d\r\nPayload = %s",
+                    (word16)*mqttCtx->publishSN.topic_name,
+                        mqttCtx->publishSN.return_code,
+                        mqttCtx->publishSN.buffer);
                 if (rc != MQTT_CODE_SUCCESS) {
                     break;
                 }
@@ -321,7 +375,7 @@ int sn_test(MQTTCtx *mqttCtx)
         SN_Unsubscribe unsubscribe;
 
         /* Build list of topics */
-        XMEMSET(&unsubscribe, 0, sizeof(SN_Subscribe));
+        XMEMSET(&unsubscribe, 0, sizeof(SN_Unsubscribe));
 
         unsubscribe.topicNameId = mqttCtx->topic_name;
 
@@ -362,6 +416,8 @@ exit:
 
     /* Cleanup network */
     MqttClientNet_DeInit(&mqttCtx->net);
+
+    MqttClient_DeInit(&mqttCtx->client);
 
     return rc;
 }

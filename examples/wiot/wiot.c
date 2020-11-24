@@ -1,6 +1,6 @@
 /* wiot.c
  *
- * Copyright (C) 2006-2018 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfMQTT.
  *
@@ -64,11 +64,13 @@ static int mStopRead = 0;
 #define TEST_MESSAGE    "{\"" WIOT_EVT "\":1}"
 
 #ifdef WOLFMQTT_DISCONNECT_CB
+/* callback indicates a network error occurred */
 static int mqtt_disconnect_cb(MqttClient* client, int error_code, void* ctx)
 {
     (void)client;
     (void)ctx;
-    PRINTF("Disconnect (error %d)", error_code);
+    PRINTF("Network Error Callback: %s (error %d)",
+        MqttClient_ReturnCodeToString(error_code), error_code);
     return 0;
 }
 #endif
@@ -129,7 +131,7 @@ int wiot_test(MQTTCtx *mqttCtx)
     PRINTF("MQTT Client: QoS %d, Use TLS %d", mqttCtx->qos, mqttCtx->use_tls);
 
     /* Initialize Network */
-    rc = MqttClientNet_Init(&mqttCtx->net);
+    rc = MqttClientNet_Init(&mqttCtx->net, mqttCtx);
 
     PRINTF("MQTT Net Init: %s (%d)",
         MqttClient_ReturnCodeToString(rc), rc);
@@ -200,7 +202,8 @@ int wiot_test(MQTTCtx *mqttCtx)
     /* Send Connect and wait for Connect Ack */
     rc = MqttClient_Connect(&mqttCtx->client, &mqttCtx->connect);
 
-    PRINTF("MQTT Connect: %s (%d)",
+    PRINTF("MQTT Connect: Proto (%s), %s (%d)",
+        MqttClient_GetProtocolVersionString(&mqttCtx->client),
         MqttClient_ReturnCodeToString(rc), rc);
     if (rc != MQTT_CODE_SUCCESS) {
         goto disconn;
@@ -240,10 +243,10 @@ int wiot_test(MQTTCtx *mqttCtx)
 
     /* show subscribe results */
     for (i = 0; i < mqttCtx->subscribe.topic_count; i++) {
-        mqttCtx->topic = &mqttCtx->subscribe.topics[i];
+        MqttTopic *topic = &mqttCtx->subscribe.topics[i];
         PRINTF("  Topic %s, Qos %u, Return Code %u",
-            mqttCtx->topic->topic_filter,
-            mqttCtx->topic->qos, mqttCtx->topic->return_code);
+            topic->topic_filter,
+            topic->qos, topic->return_code);
     }
 
     /* Publish Topic */
@@ -365,6 +368,8 @@ exit:
     /* Cleanup network */
     MqttClientNet_DeInit(&mqttCtx->net);
 
+    MqttClient_DeInit(&mqttCtx->client);
+
     return rc;
 }
 
@@ -397,7 +402,6 @@ exit:
 int main(int argc, char** argv)
 {
     int rc;
-#ifndef WOLFMQTT_NONBLOCK
     MQTTCtx mqttCtx;
 
     /* init defaults */
@@ -416,7 +420,6 @@ int main(int argc, char** argv)
     if (rc != 0) {
         return rc;
     }
-#endif
 
 #ifdef USE_WINDOWS_API
     if (SetConsoleCtrlHandler((PHANDLER_ROUTINE)CtrlHandler, TRUE) == FALSE) {
@@ -428,17 +431,11 @@ int main(int argc, char** argv)
     }
 #endif
 
-#ifndef WOLFMQTT_NONBLOCK
-    rc = wiot_test(&mqttCtx);
-#else
-    (void)argc;
-    (void)argv;
+    do {
+        rc = wiot_test(&mqttCtx);
+    } while (rc == MQTT_CODE_CONTINUE);
 
-    /* This example requires non-blocking mode to be disabled
-       ./configure --disable-nonblock */
-    PRINTF("Example not compiled in!");
-    rc = EXIT_FAILURE;
-#endif
+    mqtt_free_ctx(&mqttCtx);
 
     return (rc == 0) ? 0 : EXIT_FAILURE;
 }

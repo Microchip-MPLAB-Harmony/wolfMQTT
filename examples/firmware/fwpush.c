@@ -1,6 +1,6 @@
 /* fwpush.c
  *
- * Copyright (C) 2006-2018 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfMQTT.
  *
@@ -81,41 +81,54 @@ static int mqtt_message_cb(MqttClient *client, MqttMessage *msg,
 static int mqtt_publish_cb(MqttPublish *publish) {
     int ret = -1;
 #if !defined(NO_FILESYSTEM)
-    static FILE *fp = NULL;
     size_t bytes_read;
+    FwpushCBdata *cbData;
+    FirmwareHeader *header;
+    word32 headerSize;
 
-    /* Check for first iteration of callback */
-    if (fp == NULL) {
+    /* Structure was stored in ctx pointer */
+    if (publish != NULL) {
+        cbData = (FwpushCBdata*)publish->ctx;
+        if (cbData != NULL) {
+            header = (FirmwareHeader*)cbData->data;
 
-        /* Open file */
-        fp = fopen(FIRMWARE_PUSH_DEF_FILE, "rb");
-        if (fp != NULL) {
+            /* Check for first iteration of callback */
+            if (cbData->fp == NULL) {
+                /* Get FW size from FW header struct */
+                headerSize = sizeof(FirmwareHeader) + header->sigLen +
+                        header->pubKeyLen;
+                if (headerSize > publish->buffer_len) {
+                    PRINTF("Error: Firmware Header %d larger than max buffer %d",
+                        headerSize, publish->buffer_len);
+                    return -1;
+                }
 
-            /* Get FW size from FW header struct */
-            FirmwareHeader *header = (FirmwareHeader*)publish->ctx;
-            word32 headerSize = sizeof(FirmwareHeader) + header->sigLen +
-                    header->pubKeyLen;
+                /* Copy header to buffer */
+                XMEMCPY(publish->buffer, header, headerSize);
 
-            /* Copy header to buffer */
-            XMEMCPY(publish->buffer, header, headerSize);
-
-            /* read a buffer of data from the file */
-            bytes_read = fread(&publish->buffer[headerSize],
-                    1, publish->buffer_len - headerSize, fp);
-            if (bytes_read != 0) {
-                ret = (int)bytes_read + headerSize;
+                /* Open file */
+                cbData->fp = fopen(cbData->filename, "rb");
+                if (cbData->fp != NULL) {
+                    /* read a buffer of data from the file */
+                    bytes_read = fread(&publish->buffer[headerSize],
+                            1, publish->buffer_len - headerSize, cbData->fp);
+                    if (bytes_read != 0) {
+                        ret = (int)bytes_read + headerSize;
+                    }
+                }
+            }
+            else {
+                /* read a buffer of data from the file */
+                bytes_read = fread(publish->buffer, 1, publish->buffer_len,
+                        cbData->fp);
+                if (bytes_read != 0) {
+                    ret = (int)bytes_read;
+                }
+            }
+            if (cbData->fp && feof(cbData->fp)) {
+                fclose(cbData->fp);
             }
         }
-    }
-    else {
-        /* read a buffer of data from the file */
-        bytes_read = fread(publish->buffer, 1, publish->buffer_len, fp);
-        if (bytes_read != 0) {
-            ret = (int)bytes_read;
-        }
-    }
-    if (feof(fp)) {
-        fclose(fp);
     }
 #endif
     return ret;
@@ -305,11 +318,20 @@ exit:
 int fwpush_test(MQTTCtx *mqttCtx)
 {
     int rc;
+    FwpushCBdata* cbData = NULL;
+
+    if (mqttCtx == NULL) {
+        return MQTT_CODE_ERROR_BAD_ARG;
+    }
+
+    /* restore callback data */
+    cbData = (FwpushCBdata*)mqttCtx->publish.ctx;
 
     /* check for stop */
     if (mStopRead) {
         rc = MQTT_CODE_SUCCESS;
         PRINTF("MQTT Exiting...");
+        mStopRead = 0;
         goto disconn;
     }
 
@@ -328,7 +350,7 @@ int fwpush_test(MQTTCtx *mqttCtx)
             mqttCtx->stat = WMQ_NET_INIT;
 
             /* Initialize Network */
-            rc = MqttClientNet_Init(&mqttCtx->net);
+            rc = MqttClientNet_Init(&mqttCtx->net, mqttCtx);
             if (rc == MQTT_CODE_CONTINUE) {
                 return rc;
             }
@@ -417,7 +439,8 @@ int fwpush_test(MQTTCtx *mqttCtx)
                 return rc;
             }
 
-            PRINTF("MQTT Connect: %s (%d)",
+            PRINTF("MQTT Connect: Proto (%s), %s (%d)",
+                MqttClient_GetProtocolVersionString(&mqttCtx->client),
                 MqttClient_ReturnCodeToString(rc), rc);
 
             /* Validate Connect Ack info */
@@ -441,14 +464,29 @@ int fwpush_test(MQTTCtx *mqttCtx)
             mqttCtx->publish.packet_id = mqtt_get_packetid();
             mqttCtx->publish.buffer_len = FIRMWARE_MAX_BUFFER;
             mqttCtx->publish.buffer = (byte*)WOLFMQTT_MALLOC(FIRMWARE_MAX_BUFFER);
+            if (mqttCtx->publish.buffer == NULL) {
+                rc = MQTT_CODE_ERROR_OUT_OF_BUFFER;
+                goto disconn;
+            }
 
             /* Calculate the total payload length and store the FirmwareHeader,
-               signature, and key in publish->ctx to be used by the callback.
-               The publish->ctx is available for use by the application to pass
-               data to the callback routine. */
-            rc = fw_message_build(mqttCtx, mqttCtx->pub_file,
-                    (byte**)&mqttCtx->publish.ctx,
+               signature, and key in fwpushCBdata structure to be used by the
+               callback. */
+            cbData = (FwpushCBdata*)WOLFMQTT_MALLOC(sizeof(FwpushCBdata));
+            if (cbData == NULL) {
+                rc = MQTT_CODE_ERROR_OUT_OF_BUFFER;
+                goto disconn;
+            }
+            XMEMSET(cbData, 0, sizeof(FwpushCBdata));
+            cbData->filename = mqttCtx->pub_file;
+
+            rc = fw_message_build(mqttCtx, cbData->filename, &cbData->data,
                     (int*)&mqttCtx->publish.total_len);
+
+            /* The publish->ctx is available for use by the application to pass
+               data to the callback routine. */
+            mqttCtx->publish.ctx = cbData;
+
             if (rc != 0) {
                 PRINTF("Firmware message build failed! %d", rc);
                 exit(rc);
@@ -535,14 +573,18 @@ disconn:
 exit:
 
     if (rc != MQTT_CODE_CONTINUE) {
-        /* Free resources */
-        if (mqttCtx->publish.ctx) WOLFMQTT_FREE(mqttCtx->publish.ctx);
+        if (cbData) {
+            if (cbData->data) WOLFMQTT_FREE(cbData->data);
+            WOLFMQTT_FREE(cbData);
+        }
         if (mqttCtx->publish.buffer) WOLFMQTT_FREE(mqttCtx->publish.buffer);
         if (mqttCtx->tx_buf) WOLFMQTT_FREE(mqttCtx->tx_buf);
         if (mqttCtx->rx_buf) WOLFMQTT_FREE(mqttCtx->rx_buf);
 
         /* Cleanup network */
         MqttClientNet_DeInit(&mqttCtx->net);
+
+        MqttClient_DeInit(&mqttCtx->client);
     }
 
     return rc;
@@ -614,13 +656,15 @@ exit:
         do {
             rc = fwpush_test(&mqttCtx);
         } while (rc == MQTT_CODE_CONTINUE);
+
+        mqtt_free_ctx(&mqttCtx);
     #else
         (void)argc;
         (void)argv;
 
         /* This example requires wolfSSL after 3.7.1 for signature wrapper */
         PRINTF("Example not compiled in!");
-        rc = EXIT_FAILURE;
+        rc = 0; /* return success, so make check passes with TLS disabled */
     #endif
 
         return (rc == 0) ? 0 : EXIT_FAILURE;

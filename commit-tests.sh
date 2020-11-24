@@ -62,4 +62,26 @@ make -j 8 test;
 RESULT=$?
 [ $RESULT -ne 0 ] && echo -e "\n\nTest './configure --enable-mqtt5 --enable-propcb' make test failed " && exit 1
 
+
+# make sure multithread is okay
+echo -e "\n\nTesting multithread config...\n\n"
+./configure --enable-mt;
+RESULT=$?
+[ $RESULT -ne 0 ] && echo -e "\n\nTest './configure --enable-mt' failed" && exit 1
+
+make -j 8 test;
+RESULT=$?
+[ $RESULT -ne 0 ] && echo -e "\n\nTest './configure --enable-mt' make test failed " && exit 1
+
+# make sure multithread with non-blocking is okay
+echo -e "\n\nTesting multithread with non-block config...\n\n"
+./configure --enable-mt;
+RESULT=$?
+[ $RESULT -ne 0 ] && echo -e "\n\nTest './configure --enable-mt --enable-nonblock' failed" && exit 1
+
+make -j 8 test;
+RESULT=$?
+[ $RESULT -ne 0 ] && echo -e "\n\nTest './configure --enable-mt --enable-nonblock' make test failed " && exit 1
+
+
 exit 0

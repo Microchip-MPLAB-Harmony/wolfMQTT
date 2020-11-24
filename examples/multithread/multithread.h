@@ -1,4 +1,4 @@
-/* mqttclient.h
+/* multithread.h
  *
  * Copyright (C) 2006-2020 wolfSSL Inc.
  *
@@ -19,14 +19,14 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
-#ifndef WOLFMQTT_MQTTCLIENT_H
-#define WOLFMQTT_MQTTCLIENT_H
+#ifndef WOLFMQTT_MULTITHREAD_H
+#define WOLFMQTT_MULTITHREAD_H
 
 #include "examples/mqttexample.h"
 
 
 /* Exposed functions */
-int mqttclient_test(MQTTCtx *mqttCtx);
+int multithread_test(MQTTCtx *mqttCtx);
 
 
-#endif /* WOLFMQTT_MQTTCLIENT_H */
+#endif /* WOLFMQTT_MULTITHREAD_H */

@@ -1,6 +1,6 @@
 /* fwpush.h
  *
- * Copyright (C) 2006-2018 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfMQTT.
  *
@@ -27,6 +27,13 @@
 #define FIRMWARE_PUSH_CLIENT_ID "WolfMQTTFwPush"
 #define FIRMWARE_PUSH_DEF_FILE  "README.md"
 
+/* Structure to pass into the publish callback
+ * using the publish->ctx pointer */
+typedef struct FwpushCBdata_s {
+    const char *filename;
+    byte *data;
+    FILE *fp;
+}FwpushCBdata;
 
 /* Exposed functions */
 int fwpush_test(MQTTCtx *mqttCtx);

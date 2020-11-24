@@ -1,4 +1,4 @@
-/* mqttclient.h
+/* mqttsimple
  *
  * Copyright (C) 2006-2020 wolfSSL Inc.
  *
@@ -19,14 +19,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
-#ifndef WOLFMQTT_MQTTCLIENT_H
-#define WOLFMQTT_MQTTCLIENT_H
-
-#include "examples/mqttexample.h"
+#ifndef WOLFMQTT_SIMPLE_H
+#define WOLFMQTT_SIMPLE_H
 
 
 /* Exposed functions */
-int mqttclient_test(MQTTCtx *mqttCtx);
+int mqttsimple_test(void);
 
 
-#endif /* WOLFMQTT_MQTTCLIENT_H */
+#endif /* WOLFMQTT_SIMPLE_H */

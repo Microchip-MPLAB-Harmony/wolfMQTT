@@ -1,6 +1,6 @@
 /* nbclient.c
  *
- * Copyright (C) 2006-2018 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfMQTT.
  *
@@ -41,11 +41,13 @@ static int mStopRead = 0;
 #define TEST_MESSAGE    "test"
 
 #ifdef WOLFMQTT_DISCONNECT_CB
+/* callback indicates a network error occurred */
 static int mqtt_disconnect_cb(MqttClient* client, int error_code, void* ctx)
 {
     (void)client;
     (void)ctx;
-    PRINTF("Disconnect (error %d)", error_code);
+    PRINTF("Network Error Callback: %s (error %d)",
+        MqttClient_ReturnCodeToString(error_code), error_code);
     return 0;
 }
 #endif
@@ -111,6 +113,8 @@ int mqttclient_test(MQTTCtx *mqttCtx)
             PRINTF("MQTT Client: QoS %d, Use TLS %d", mqttCtx->qos,
                     mqttCtx->use_tls);
 
+            mqttCtx->useNonBlockMode = 1;
+
             FALL_THROUGH;
         }
 
@@ -119,7 +123,7 @@ int mqttclient_test(MQTTCtx *mqttCtx)
             mqttCtx->stat = WMQ_NET_INIT;
 
             /* Initialize Network */
-            rc = MqttClientNet_Init(&mqttCtx->net);
+            rc = MqttClientNet_Init(&mqttCtx->net, mqttCtx);
             if (rc == MQTT_CODE_CONTINUE) {
                 return rc;
             }
@@ -219,7 +223,8 @@ int mqttclient_test(MQTTCtx *mqttCtx)
             if (rc == MQTT_CODE_CONTINUE) {
                 return rc;
             }
-            PRINTF("MQTT Connect: %s (%d)",
+            PRINTF("MQTT Connect: Proto (%s), %s (%d)",
+                MqttClient_GetProtocolVersionString(&mqttCtx->client),
                 MqttClient_ReturnCodeToString(rc), rc);
             if (rc != MQTT_CODE_SUCCESS) {
                 goto disconn;
@@ -235,6 +240,7 @@ int mqttclient_test(MQTTCtx *mqttCtx)
 
             /* Build list of topics */
             XMEMSET(&mqttCtx->subscribe, 0, sizeof(MqttSubscribe));
+
             i = 0;
             mqttCtx->topics[i].topic_filter = mqttCtx->topic_name;
             mqttCtx->topics[i].qos = mqttCtx->qos;
@@ -265,10 +271,10 @@ int mqttclient_test(MQTTCtx *mqttCtx)
 
             /* show subscribe results */
             for (i = 0; i < mqttCtx->subscribe.topic_count; i++) {
-                mqttCtx->topic = &mqttCtx->subscribe.topics[i];
+                MqttTopic *topic = &mqttCtx->subscribe.topics[i];
                 PRINTF("  Topic %s, Qos %u, Return Code %u",
-                    mqttCtx->topic->topic_filter,
-                    mqttCtx->topic->qos, mqttCtx->topic->return_code);
+                    topic->topic_filter,
+                    topic->qos, topic->return_code);
             }
 
             /* Publish Topic */
@@ -373,7 +379,7 @@ int mqttclient_test(MQTTCtx *mqttCtx)
         {
             /* Unsubscribe Topics */
             rc = MqttClient_Unsubscribe(&mqttCtx->client,
-                   &mqttCtx->unsubscribe);
+                &mqttCtx->unsubscribe);
             if (rc == MQTT_CODE_CONTINUE) {
                 /* Track elapsed time with no activity and trigger timeout */
                 return mqtt_check_timeout(rc, &mqttCtx->start_sec,
@@ -446,6 +452,8 @@ exit:
 
         /* Cleanup network */
         MqttClientNet_DeInit(&mqttCtx->net);
+
+        MqttClient_DeInit(&mqttCtx->client);
     }
 
     return rc;
@@ -496,6 +504,10 @@ exit:
         /* parse arguments */
         rc = mqtt_parse_args(&mqttCtx, argc, argv);
         if (rc != 0) {
+            if (rc == MY_EX_USAGE) {
+                /* return success, so make check passes with TLS disabled */
+                return 0;
+            }
             return rc;
         }
 #endif
@@ -517,17 +529,16 @@ exit:
             rc = mqttclient_test(&mqttCtx);
         } while (rc == MQTT_CODE_CONTINUE);
 #else
-    (void)argc;
-    (void)argv;
+        (void)argc;
+        (void)argv;
 
-    /* This example requires non-blocking mode to be enabled
-       ./configure --enable-nonblock */
-    PRINTF("Example not compiled in!");
-    rc = EXIT_FAILURE;
+        /* This example requires non-blocking mode to be enabled
+           ./configure --enable-nonblock */
+        PRINTF("Example not compiled in!");
+        rc = 0; /* return success, so make check passes with TLS disabled */
 #endif
 
         return (rc == 0) ? 0 : EXIT_FAILURE;
     }
 
 #endif /* NO_MAIN_DRIVER */
-

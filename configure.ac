@@ -1,9 +1,9 @@
 # wolfmqtt
-# Copyright (C) 2018 wolfSSL Inc.
+# Copyright (C) 2020 wolfSSL Inc.
 # All right reserved.
 
-AC_COPYRIGHT([Copyright (C) 2014-2018 wolfSSL Inc.])
-AC_INIT([wolfmqtt],[1.2.0],[https://github.com/wolfssl/wolfMQTT/issues],[wolfmqtt],[http://www.wolfssl.com])
+AC_COPYRIGHT([Copyright (C) 2014-2020 wolfSSL Inc.])
+AC_INIT([wolfmqtt],[1.7.0],[https://github.com/wolfssl/wolfMQTT/issues],[wolfmqtt],[http://www.wolfssl.com])
 
 AC_PREREQ([2.63])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -12,7 +12,7 @@ AC_CONFIG_AUX_DIR([build-aux])
 : ${CFLAGS=""}
 
 # Test ar for the "U" option. Should be checked before the libtool macros.
-xxx_ar_flags=$((ar --help) 2>&1)
+xxx_ar_flags=$(ar --help 2>&1)
 AS_CASE([$xxx_ar_flags],[*'use actual timestamps and uids/gids'*],[: ${AR_FLAGS="Ucru"}])
 
 AC_CANONICAL_HOST
@@ -23,7 +23,7 @@ AC_ARG_PROGRAM
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_HEADERS([src/config.h])
 
-WOLFMQTT_LIBRARY_VERSION=4:0:0
+WOLFMQTT_LIBRARY_VERSION=7:0:0
 #                        | | |
 #                 +------+ | +---+
 #                 |        |     |
@@ -39,7 +39,7 @@ AC_SUBST([WOLFMQTT_LIBRARY_VERSION])
 
 
 LT_PREREQ([2.2])
-LT_INIT([disable-static], [win32-dll])
+LT_INIT([disable-static win32-dll])
 LT_LANG([C])
 
 gl_VISIBILITY
@@ -61,7 +61,7 @@ AC_CHECK_SIZEOF([long long], 8)
 AC_CHECK_SIZEOF([long], 4)
 
 # Check headers/libs
-AC_CHECK_FUNCS([gethostbyname getaddrinfo gettimeofday inet_ntoa memset socket signal])
+AC_CHECK_FUNCS([gethostbyname getaddrinfo gettimeofday inet_ntoa memset socket signal rand])
 AC_CHECK_LIB([network],[socket])
 
 # DEBUG
@@ -153,7 +153,7 @@ AC_ARG_ENABLE([examples],
 AM_CONDITIONAL([BUILD_EXAMPLES], [test "x$ENABLED_EXAMPLES" = "xyes"])
 
 
-# Error strings 
+# Error strings
 AC_ARG_ENABLE([errorstrings],
     [AS_HELP_STRING([--enable-errorstrings],[Enable error strings  (default: enabled)])],
     [ ENABLED_ERROR_STRINGS=$enableval ],
@@ -238,7 +238,19 @@ then
     AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_DISCONNECT_CB"
 fi
 
+# Multithread support
+AC_ARG_ENABLE([mt],
+    [AS_HELP_STRING([--enable-mt],[Enable multiple thread support (default: disabled)])],
+    [ ENABLED_MULTITHREAD=$enableval ],
+    [ ENABLED_MULTITHREAD=no ]
+    )
 
+if test "x$ENABLED_MULTITHREAD" = "xyes"
+then
+    AM_CFLAGS="$AM_CFLAGS -DWOLFMQTT_MULTITHREAD"
+fi
+
+AM_CONDITIONAL([BUILD_MULTITHREAD], [test "x$ENABLED_MULTITHREAD" = "xyes"])
 
 # HARDEN FLAGS
 AX_HARDEN_CC_COMPILER_FLAGS
@@ -276,7 +288,7 @@ rm -f $OPTION_FILE
 echo "/* wolfmqtt options.h" > $OPTION_FILE
 echo " * generated from configure options" >> $OPTION_FILE
 echo " *" >> $OPTION_FILE
-echo " * Copyright (C) 2006-2018 wolfSSL Inc." >> $OPTION_FILE
+echo " * Copyright (C) 2006-2020 wolfSSL Inc." >> $OPTION_FILE
 echo " *" >> $OPTION_FILE
 echo " * * This file is part of wolfMQTT." >> $OPTION_FILE
 echo " *" >> $OPTION_FILE
@@ -358,4 +370,4 @@ echo "   * Examples:                  $ENABLED_EXAMPLES"
 echo "   * Non-Blocking:              $ENABLED_NONBLOCK"
 echo "   * STDIN Capture:             $ENABLED_STDINCAP"
 echo "   * TLS:                       $ENABLED_TLS"
-
+echo "   * Multi-thread:              $ENABLED_MULTITHREAD"

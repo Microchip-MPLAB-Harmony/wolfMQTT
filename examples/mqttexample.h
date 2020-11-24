@@ -1,6 +1,6 @@
 /* mqttexample.h
  *
- * Copyright (C) 2006-2018 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfMQTT.
  *
@@ -30,6 +30,10 @@
 #ifdef NO_EXIT
 	#undef exit
 	#define exit(rc) return rc
+#endif
+
+#ifndef MY_EX_USAGE
+#define MY_EX_USAGE 2 /* Exit reason code */
 #endif
 
 /* STDIN / FGETS for examples */
@@ -67,7 +71,6 @@
 #define DEFAULT_TOPIC_NAME      WOLFMQTT_TOPIC_NAME"testTopic"
 #define DEFAULT_AUTH_METHOD    "EXTERNAL"
 #define PRINT_BUFFER_SIZE       80
-#define MAX_PACKET_ID           ((1 << 16) - 1)
 
 #ifdef WOLFMQTT_V5
 #define DEFAULT_MAX_PKT_SZ      768 /* The max MQTT control packet size the
@@ -91,6 +94,8 @@ typedef enum _MQTTCtxState {
 } MQTTCtxState;
 
 /* MQTT Client context */
+/* This is used for the examples as reference */
+/* Use of this structure allow non-blocking context */
 typedef struct _MQTTCtx {
     MQTTCtxState stat;
 
@@ -105,9 +110,13 @@ typedef struct _MQTTCtx {
     MqttMessage lwt_msg;
     MqttSubscribe subscribe;
     MqttUnsubscribe unsubscribe;
-    MqttTopic topics[1], *topic;
+    MqttTopic topics[1];
     MqttPublish publish;
     MqttDisconnect disconnect;
+
+#ifdef WOLFMQTT_SN
+    SN_Publish publishSN;
+#endif
 
     /* configuration */
     MqttQoS qos;
@@ -142,11 +151,18 @@ typedef struct _MQTTCtx {
     byte    subId_not_avail; /* Server property */
     byte    enable_eauth; /* Enhanced authentication */
 #endif
+    unsigned int dynamicTopic:1;
+    unsigned int dynamicClientId:1;
+#ifdef WOLFMQTT_NONBLOCK
+    unsigned int useNonBlockMode:1; /* set to use non-blocking mode.
+        network callbacks can return MQTT_CODE_CONTINUE to indicate "would block" */
+#endif
 } MQTTCtx;
 
 
 void mqtt_show_usage(MQTTCtx* mqttCtx);
 void mqtt_init_ctx(MQTTCtx* mqttCtx);
+void mqtt_free_ctx(MQTTCtx* mqttCtx);
 int mqtt_parse_args(MQTTCtx* mqttCtx, int argc, char** argv);
 int err_sys(const char* msg);
 

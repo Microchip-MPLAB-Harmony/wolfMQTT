@@ -1,6 +1,6 @@
 /* mqttnet.c
  *
- * Copyright (C) 2006-2018 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfMQTT.
  *
@@ -62,7 +62,9 @@
     #define SOCKET_T        SOCKET
     #define SOERROR_T       char
     #define SELECT_FD(fd)   (fd)
-    #define SOCKET_INVALID  ((SOCKET_T)INVALID_SOCKET)
+    #ifndef SOCKET_INVALID /* Do not redefine from wolfssl */
+        #define SOCKET_INVALID  ((SOCKET_T)INVALID_SOCKET)
+    #endif
     #define SOCK_CLOSE      closesocket
     #define SOCK_SEND(s,b,l,f) send((s), (const char*)(b), (size_t)(l), (f))
     #define SOCK_RECV(s,b,l,f) recv((s), (char*)(b), (size_t)(l), (f))
@@ -74,6 +76,10 @@
     #endif
     #include <rtcs.h>
     /* Note: Use "RTCS_geterror(sock->fd);" to get error number */
+    #define SOCKET_INVALID  RTCS_SOCKET_ERROR
+    #define SOCKET_T        uint32_t
+    #define SOCK_CLOSE      closesocket
+    #define SOCK_OPEN       RTCS_socket
 
 /* Microchip MPLABX Harmony, TCP/IP */
 #elif defined(MICROCHIP_MPLAB_HARMONY)
@@ -108,6 +114,9 @@
 #endif
 
 /* Setup defaults */
+#ifndef SOCK_OPEN
+    #define SOCK_OPEN       socket
+#endif
 #ifndef SOCKET_T
     #define SOCKET_T        int
 #endif
@@ -146,6 +155,14 @@ typedef enum {
     SOCK_CONN,
 } NB_Stat;
 
+
+#if 0 /* TODO: add multicast support */
+typedef struct MulticastContext {
+
+} MulticastContext;
+#endif
+
+
 typedef struct _SocketContext {
     SOCKET_T fd;
     NB_Stat stat;
@@ -153,8 +170,12 @@ typedef struct _SocketContext {
 #ifdef MICROCHIP_MPLAB_HARMONY
     word32 bytes;
 #endif
+#if defined(WOLFMQTT_MULTITHREAD) && defined(WOLFMQTT_ENABLE_STDIN_CAP)
+    /* "self pipe" -> signal wake sleep() */
+    SOCKET_T pfd[2];
+#endif
+    MQTTCtx* mqttCtx;
 } SocketContext;
-
 
 /* Private functions */
 
@@ -172,9 +193,13 @@ static int NetConnect(void *context, const char* host, word16 port,
     SocketContext *sock = (SocketContext*)context;
     uint32_t hostIp = 0;
     int rc = -1;
+    MQTTCtx* mqttCtx = sock->mqttCtx;
 
     switch (sock->stat) {
     case SOCK_BEGIN:
+        PRINTF("NetConnect: Host %s, Port %u, Timeout %d ms, Use TLS %d",
+            host, port, timeout_ms, mqttCtx->use_tls);
+
         hostIp = FreeRTOS_gethostbyname_a(host, NULL, 0, 0);
         if (hostIp == 0)
             break;
@@ -345,11 +370,15 @@ static int NetConnect(void *context, const char* host, word16 port,
     int rc = MQTT_CODE_ERROR_NETWORK;
     struct addrinfo hints;
     struct hostent *hostInfo;
+    MQTTCtx* mqttCtx = sock->mqttCtx;
 
     /* Get address information for host and locate IPv4 */
     switch(sock->stat) {
         case SOCK_BEGIN:
         {
+            PRINTF("NetConnect: Host %s, Port %u, Timeout %d ms, Use TLS %d",
+                host, port, timeout_ms, mqttCtx->use_tls);
+
             XMEMSET(&hints, 0, sizeof(hints));
             hints.ai_family = AF_INET;
             hints.ai_socktype = SOCK_STREAM;
@@ -370,7 +399,7 @@ static int NetConnect(void *context, const char* host, word16 port,
             }
 
             /* Create socket */
-            sock->fd = socket(sock->addr.sin_family, type, 0);
+            sock->fd = SOCK_OPEN(sock->addr.sin_family, type, 0);
             if (sock->fd == SOCKET_INVALID)
                 goto exit;
 
@@ -533,11 +562,15 @@ static int NetConnect(void *context, const char* host, word16 port,
     SOERROR_T so_error = 0;
     struct addrinfo *result = NULL;
     struct addrinfo hints;
+    MQTTCtx* mqttCtx = sock->mqttCtx;
 
     /* Get address information for host and locate IPv4 */
     switch(sock->stat) {
         case SOCK_BEGIN:
         {
+            PRINTF("NetConnect: Host %s, Port %u, Timeout %d ms, Use TLS %d",
+                host, port, timeout_ms, mqttCtx->use_tls);
+
             XMEMSET(&hints, 0, sizeof(hints));
             hints.ai_family = AF_INET;
             hints.ai_socktype = SOCK_STREAM;
@@ -547,23 +580,26 @@ static int NetConnect(void *context, const char* host, word16 port,
             sock->addr.sin_family = AF_INET;
 
             rc = getaddrinfo(host, NULL, &hints, &result);
-            if (rc >= 0 && result != NULL) {
-                struct addrinfo* res = result;
+            if (rc == 0) {
+                struct addrinfo* result_i = result;
 
-                /* prefer ip4 addresses */
-                while (res) {
-                    if (res->ai_family == AF_INET) {
-                        result = res;
-                        break;
-                    }
-                    res = res->ai_next;
+                if (! result) {
+                    rc = -1;
+                    goto exit;
                 }
 
-                if (result->ai_family == AF_INET) {
+                /* prefer ip4 addresses */
+                while (result_i) {
+                    if (result_i->ai_family == AF_INET)
+                        break;
+                    result_i = result_i->ai_next;
+                }
+
+                if (result_i) {
                     sock->addr.sin_port = htons(port);
                     sock->addr.sin_family = AF_INET;
                     sock->addr.sin_addr =
-                        ((SOCK_ADDR_IN*)(result->ai_addr))->sin_addr;
+                        ((SOCK_ADDR_IN*)(result_i->ai_addr))->sin_addr;
                 }
                 else {
                     rc = -1;
@@ -578,7 +614,7 @@ static int NetConnect(void *context, const char* host, word16 port,
             rc = -1;
 
             /* Create socket */
-            sock->fd = socket(sock->addr.sin_family, type, 0);
+            sock->fd = SOCK_OPEN(sock->addr.sin_family, type, 0);
             if (sock->fd == SOCKET_INVALID)
                 goto exit;
 
@@ -600,28 +636,31 @@ static int NetConnect(void *context, const char* host, word16 port,
         #endif /* !WOLFMQTT_NO_TIMEOUT */
 
         #if !defined(WOLFMQTT_NO_TIMEOUT) && defined(WOLFMQTT_NONBLOCK)
-            /* Set socket as non-blocking */
-            tcp_set_nonblocking(&sock->fd);
+            if (mqttCtx->useNonBlockMode) {
+                /* Set socket as non-blocking */
+                tcp_set_nonblocking(&sock->fd);
+            }
         #endif
 
             /* Start connect */
             rc = SOCK_CONNECT(sock->fd, (struct sockaddr*)&sock->addr, sizeof(sock->addr));
-        #ifndef WOLFMQTT_NO_TIMEOUT
-            /* Wait for connect */
-            if (rc < 0 || select((int)SELECT_FD(sock->fd), NULL, &fdset, NULL, &tv) > 0)
-        #else
-            if (rc < 0)
-        #endif /* !WOLFMQTT_NO_TIMEOUT */
-            {
+            if (rc < 0) {
                 /* Check for error */
                 socklen_t len = sizeof(so_error);
                 getsockopt(sock->fd, SOL_SOCKET, SO_ERROR, &so_error, &len);
-                if (so_error == 0) {
-                    rc = 0; /* Success */
-                }
-            #if !defined(WOLFMQTT_NO_TIMEOUT) && defined(WOLFMQTT_NONBLOCK)
-                else if (so_error == EINPROGRESS) {
+
+                /* set default error case */
+                rc = MQTT_CODE_ERROR_NETWORK;
+            #ifdef WOLFMQTT_NONBLOCK
+                if (errno == EINPROGRESS || so_error == EINPROGRESS) {
+                #ifndef WOLFMQTT_NO_TIMEOUT
+                    /* Wait for connect */
+                    if (select((int)SELECT_FD(sock->fd), NULL, &fdset, NULL, &tv) > 0) {
+                        rc = MQTT_CODE_SUCCESS;
+                    }
+                #else
                     rc = MQTT_CODE_CONTINUE;
+                #endif
                 }
             #endif
             }
@@ -653,6 +692,10 @@ static int SN_NetConnect(void *context, const char* host, word16 port,
     SOERROR_T so_error = 0;
     struct addrinfo *result = NULL;
     struct addrinfo hints;
+    MQTTCtx* mqttCtx = sock->mqttCtx;
+
+    PRINTF("NetConnect: Host %s, Port %u, Timeout %d ms, Use TLS %d\n",
+        host, port, timeout_ms, mqttCtx->use_tls);
 
     /* Get address information for host and locate IPv4 */
     XMEMSET(&hints, 0, sizeof(struct addrinfo));
@@ -663,23 +706,26 @@ static int SN_NetConnect(void *context, const char* host, word16 port,
     sock->addr.sin_family = AF_INET;
 
     rc = getaddrinfo(host, NULL, &hints, &result);
-    if (rc >= 0 && result != NULL) {
-        struct addrinfo* res = result;
+    if (rc == 0) {
+        struct addrinfo* result_i = result;
 
-        /* prefer ip4 addresses */
-        while (res) {
-            if (res->ai_family == AF_INET) {
-                result = res;
-                break;
-            }
-            res = res->ai_next;
+        if (! result) {
+            rc = -1;
+            goto exit;
         }
 
-        if (result->ai_family == AF_INET) {
+        /* prefer ip4 addresses */
+        while (result_i) {
+            if (result_i->ai_family == AF_INET)
+                break;
+            result_i = result_i->ai_next;
+        }
+
+        if (result_i) {
             sock->addr.sin_port = htons(port);
             sock->addr.sin_family = AF_INET;
             sock->addr.sin_addr =
-                ((SOCK_ADDR_IN*)(result->ai_addr))->sin_addr;
+                ((SOCK_ADDR_IN*)(result_i->ai_addr))->sin_addr;
         }
         else {
             rc = -1;
@@ -687,11 +733,12 @@ static int SN_NetConnect(void *context, const char* host, word16 port,
 
         freeaddrinfo(result);
     }
+    if (rc != 0)
+        goto exit;
 
     if (rc == 0) {
-
-    /* Create the socket */
-        sock->fd = socket(sock->addr.sin_family, type, 0);
+        /* Create the socket */
+        sock->fd = SOCK_OPEN(sock->addr.sin_family, type, 0);
         if (sock->fd == SOCKET_INVALID) {
             rc = -1;
         }
@@ -715,6 +762,7 @@ static int SN_NetConnect(void *context, const char* host, word16 port,
         rc = SOCK_CONNECT(sock->fd, (struct sockaddr*)&sock->addr, sizeof(sock->addr));
     }
 
+  exit:
     /* Show error */
     if (rc != 0) {
         SOCK_CLOSE(sock->fd);
@@ -739,6 +787,9 @@ static int NetWrite(void *context, const byte* buf, int buf_len,
         return MQTT_CODE_ERROR_BAD_ARG;
     }
 
+    if (sock->fd == SOCKET_INVALID)
+        return MQTT_CODE_ERROR_BAD_ARG;
+
 #ifndef WOLFMQTT_NO_TIMEOUT
     /* Setup timeout */
     setup_timeout(&tv, timeout_ms);
@@ -751,7 +802,12 @@ static int NetWrite(void *context, const byte* buf, int buf_len,
         socklen_t len = sizeof(so_error);
         getsockopt(sock->fd, SOL_SOCKET, SO_ERROR, &so_error, &len);
         if (so_error == 0) {
+        #if defined(USE_WINDOWS_API) && defined(WOLFMQTT_NONBLOCK)
+            /* assume non-blocking case */
+            rc = MQTT_CODE_CONTINUE;
+        #else
             rc = 0; /* Handle signal */
+        #endif
         }
         else {
         #ifdef WOLFMQTT_NONBLOCK
@@ -773,86 +829,119 @@ static int NetRead_ex(void *context, byte* buf, int buf_len,
     int timeout_ms, byte peek)
 {
     SocketContext *sock = (SocketContext*)context;
+    MQTTCtx* mqttCtx = sock->mqttCtx;
     int rc = -1, timeout = 0;
     SOERROR_T so_error = 0;
     int bytes = 0;
     int flags = 0;
-#if !defined(WOLFMQTT_NO_TIMEOUT) && !defined(WOLFMQTT_NONBLOCK)
+#ifndef WOLFMQTT_NO_TIMEOUT
     fd_set recvfds;
     fd_set errfds;
     struct timeval tv;
 #endif
 
+    (void)mqttCtx;
+
     if (context == NULL || buf == NULL || buf_len <= 0) {
         return MQTT_CODE_ERROR_BAD_ARG;
     }
+
+    if (sock->fd == SOCKET_INVALID)
+        return MQTT_CODE_ERROR_BAD_ARG;
 
     if (peek == 1) {
         flags |= MSG_PEEK;
     }
 
-#if !defined(WOLFMQTT_NO_TIMEOUT) && !defined(WOLFMQTT_NONBLOCK)
-    /* Setup timeout and FD's */
+#ifndef WOLFMQTT_NO_TIMEOUT
+    /* Setup timeout */
     setup_timeout(&tv, timeout_ms);
-    FD_ZERO(&recvfds);
-    FD_SET(sock->fd, &recvfds);
+
+    /* Setup select file descriptors to watch */
     FD_ZERO(&errfds);
     FD_SET(sock->fd, &errfds);
-
+    FD_ZERO(&recvfds);
+    FD_SET(sock->fd, &recvfds);
     #ifdef WOLFMQTT_ENABLE_STDIN_CAP
-        FD_SET(STDIN, &recvfds);
+    #ifdef WOLFMQTT_MULTITHREAD
+        FD_SET(sock->pfd[0], &recvfds);
     #endif
-
+    if (!mqttCtx->test_mode) {
+        FD_SET(STDIN, &recvfds);
+    }
+    #endif /* WOLFMQTT_ENABLE_STDIN_CAP */
 #else
     (void)timeout_ms;
-#endif /* !WOLFMQTT_NO_TIMEOUT && !WOLFMQTT_NONBLOCK */
+#endif /* !WOLFMQTT_NO_TIMEOUT */
 
     /* Loop until buf_len has been read, error or timeout */
     while (bytes < buf_len) {
+        int do_read = 0;
 
-    #if !defined(WOLFMQTT_NO_TIMEOUT) && !defined(WOLFMQTT_NONBLOCK)
-        /* Wait for rx data to be available */
-        rc = select((int)SELECT_FD(sock->fd), &recvfds, NULL, &errfds, &tv);
-        if (rc > 0)
-        {
-            /* Check if rx or error */
-            if (FD_ISSET(sock->fd, &recvfds)) {
-    #endif /* !WOLFMQTT_NO_TIMEOUT && !WOLFMQTT_NONBLOCK */
-
-                /* Try and read number of buf_len provided,
-                    minus what's already been read */
-                rc = (int)SOCK_RECV(sock->fd,
-                               &buf[bytes],
-                               buf_len - bytes,
-                               flags);
-                if (rc <= 0) {
-                    rc = -1;
-                    goto exit; /* Error */
-                }
-                else {
-                    bytes += rc; /* Data */
-                }
-
-    #if !defined(WOLFMQTT_NO_TIMEOUT) && !defined(WOLFMQTT_NONBLOCK)
-            }
-        #ifdef WOLFMQTT_ENABLE_STDIN_CAP
-            else if (FD_ISSET(STDIN, &recvfds)) {
-                return MQTT_CODE_STDIN_WAKE;
-            }
-        #endif
-            if (FD_ISSET(sock->fd, &errfds)) {
-                rc = -1;
-                break;
-            }
+    #ifndef WOLFMQTT_NO_TIMEOUT
+        #ifdef WOLFMQTT_NONBLOCK
+        if (mqttCtx->useNonBlockMode) {
+            do_read = 1;
         }
-        else {
-            timeout = 1;
-            break; /* timeout or signal */
+        else
+        #endif
+        {
+            /* Wait for rx data to be available */
+            rc = select((int)SELECT_FD(sock->fd), &recvfds, NULL, &errfds, &tv);
+            if (rc > 0)
+            {
+                if (FD_ISSET(sock->fd, &recvfds)) {
+                    do_read = 1;
+                }
+                /* Check if rx or error */
+            #ifdef WOLFMQTT_ENABLE_STDIN_CAP
+                else if ((!mqttCtx->test_mode && FD_ISSET(STDIN, &recvfds)) 
+                #ifdef WOLFMQTT_MULTITHREAD
+                    || FD_ISSET(sock->pfd[0], &recvfds)
+                #endif
+                ) {
+                    return MQTT_CODE_STDIN_WAKE;
+                }
+            #endif
+                if (FD_ISSET(sock->fd, &errfds)) {
+                    rc = -1;
+                    break;
+                }
+            }
+            else {
+                timeout = 1;
+                break; /* timeout or signal */
+            }
         }
     #else
-        /* non-blocking should always exit loop */
+        do_read = 1;
+    #endif /* !WOLFMQTT_NO_TIMEOUT */
+
+        if (do_read) {
+            /* Try and read number of buf_len provided,
+                minus what's already been read */
+            rc = (int)SOCK_RECV(sock->fd,
+                           &buf[bytes],
+                           buf_len - bytes,
+                           flags);
+            if (rc <= 0) {
+                rc = -1;
+                goto exit; /* Error */
+            }
+            else {
+                bytes += rc; /* Data */
+            }
+        }
+
+        /* no timeout and non-block should always exit loop */
+    #ifdef WOLFMQTT_NONBLOCK
+        if (mqttCtx->useNonBlockMode) {
+            break;
+        }
+    #endif
+    #ifdef WOLFMQTT_NO_TIMEOUT
         break;
-    #endif /* !WOLFMQTT_NO_TIMEOUT && !WOLFMQTT_NONBLOCK */
+    #endif
     } /* while */
 
 exit:
@@ -915,7 +1004,7 @@ static int NetDisconnect(void *context)
 
 
 /* Public Functions */
-int MqttClientNet_Init(MqttNet* net)
+int MqttClientNet_Init(MqttNet* net, MQTTCtx* mqttCtx)
 {
 #if defined(USE_WINDOWS_API) && !defined(FREERTOS_TCP)
     WSADATA wsd;
@@ -953,47 +1042,75 @@ int MqttClientNet_Init(MqttNet* net)
 #endif /* MICROCHIP_MPLAB_HARMONY */
 
     if (net) {
+        SocketContext* sockCtx;
+
         XMEMSET(net, 0, sizeof(MqttNet));
         net->connect = NetConnect;
         net->read = NetRead;
         net->write = NetWrite;
         net->disconnect = NetDisconnect;
-        net->context = (SocketContext *)WOLFMQTT_MALLOC(sizeof(SocketContext));
-        if (net->context == NULL) {
+
+        sockCtx = (SocketContext*)WOLFMQTT_MALLOC(sizeof(SocketContext));
+        if (sockCtx == NULL) {
             return MQTT_CODE_ERROR_MEMORY;
         }
-        XMEMSET(net->context, 0, sizeof(SocketContext));
-
-        ((SocketContext*)(net->context))->stat = SOCK_BEGIN;
+        net->context = sockCtx;
+        XMEMSET(sockCtx, 0, sizeof(SocketContext));
+        sockCtx->fd = SOCKET_INVALID;
+        sockCtx->stat = SOCK_BEGIN;
+        sockCtx->mqttCtx = mqttCtx;
+    
+    #if defined(WOLFMQTT_MULTITHREAD) && defined(WOLFMQTT_ENABLE_STDIN_CAP)
+        /* setup the pipe for waking select() */
+        if (pipe(sockCtx->pfd) != 0) {
+            PRINTF("Failed to set up pipe for stdin");
+            return -1;
+        }
+    #endif
     }
 
     return MQTT_CODE_SUCCESS;
 }
 
 #ifdef WOLFMQTT_SN
-int SN_ClientNet_Init(MqttNet* net)
+int SN_ClientNet_Init(MqttNet* net, MQTTCtx* mqttCtx)
 {
     if (net) {
+        SocketContext* sockCtx;
+
         XMEMSET(net, 0, sizeof(MqttNet));
         net->connect = SN_NetConnect;
         net->read = NetRead;
         net->write = NetWrite;
         net->peek = NetPeek;
         net->disconnect = NetDisconnect;
-        net->context = (SocketContext *)WOLFMQTT_MALLOC(sizeof(SocketContext));
-        if (net->context == NULL) {
-            return MQTT_CODE_ERROR_MEMORY;
-        }
-        XMEMSET(net->context, 0, sizeof(SocketContext));
-        ((SocketContext*)(net->context))->stat = SOCK_BEGIN;
 
-    #if 0 //TODO: multicast support
-        net->multi_ctx = (SocketContext *)WOLFMQTT_MALLOC(sizeof(SocketContext));
-        if (net->multi_ctx == NULL) {
+        sockCtx = (SocketContext*)WOLFMQTT_MALLOC(sizeof(SocketContext));
+        if (sockCtx == NULL) {
             return MQTT_CODE_ERROR_MEMORY;
         }
-        XMEMSET(net->multi_ctx, 0, sizeof(SocketContext));
-        ((SocketContext*)(net->multi_ctx))->stat = SOCK_BEGIN;
+        net->context = sockCtx;
+        XMEMSET(sockCtx, 0, sizeof(SocketContext));
+        sockCtx->stat = SOCK_BEGIN;
+        sockCtx->mqttCtx = mqttCtx;
+
+    #if 0 /* TODO: add multicast support */
+        MulticastContext* multi_ctx;
+        multi_ctx = (MulticastContext*)WOLFMQTT_MALLOC(sizeof(MulticastContext));
+        if (multi_ctx == NULL) {
+            return MQTT_CODE_ERROR_MEMORY;
+        }
+        net->multi_ctx = multi_ctx;
+        XMEMSET(multi_ctx, 0, sizeof(MulticastContext));
+        multi_ctx->stat = SOCK_BEGIN;
+    #endif
+
+    #if defined(WOLFMQTT_MULTITHREAD) && defined(WOLFMQTT_ENABLE_STDIN_CAP)
+        /* setup the pipe for waking select() */
+        if (pipe(sockCtx->pfd) != 0) {
+            PRINTF("Failed to set up pipe for stdin");
+            return -1;
+        }
     #endif
     }
 
@@ -1009,5 +1126,24 @@ int MqttClientNet_DeInit(MqttNet* net)
         }
         XMEMSET(net, 0, sizeof(MqttNet));
     }
+    return 0;
+}
+
+int MqttClientNet_Wake(MqttNet* net)
+{
+#if defined(WOLFMQTT_MULTITHREAD) && defined(WOLFMQTT_ENABLE_STDIN_CAP)
+    if (net) {
+        SocketContext* sockCtx = (SocketContext*)net->context;
+        if (sockCtx) {
+            /* wake the select() */
+            if (write(sockCtx->pfd[1], "\n", 1) < 0) {
+                PRINTF("Failed to wake select");
+                return -1;
+            }
+        }
+    }
+#else
+    (void)net;
+#endif
     return 0;
 }

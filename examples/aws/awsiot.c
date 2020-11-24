@@ -1,6 +1,6 @@
 /* awsiot.c
  *
- * Copyright (C) 2006-2018 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfMQTT.
  *
@@ -76,8 +76,8 @@ static int mStopRead = 0;
 #define AWSIOT_KEEP_ALIVE_SEC   DEFAULT_KEEP_ALIVE_SEC
 #define AWSIOT_CMD_TIMEOUT_MS   DEFAULT_CMD_TIMEOUT_MS
 
-#define AWSIOT_SUBSCRIBE_TOPIC  "$aws/things/"AWSIOT_DEVICE_ID"/shadow/update/delta"
-#define AWSIOT_PUBLISH_TOPIC    "$aws/things/"AWSIOT_DEVICE_ID"/shadow/update"
+#define AWSIOT_SUBSCRIBE_TOPIC  "$aws/things/" AWSIOT_DEVICE_ID "/shadow/update/delta"
+#define AWSIOT_PUBLISH_TOPIC    "$aws/things/" AWSIOT_DEVICE_ID "/shadow/update"
 
 #define AWSIOT_PUBLISH_MSG_SZ   400
 
@@ -290,7 +290,7 @@ int awsiot_test(MQTTCtx *mqttCtx)
             mqttCtx->stat = WMQ_NET_INIT;
 
             /* Initialize Network */
-            rc = MqttClientNet_Init(&mqttCtx->net);
+            rc = MqttClientNet_Init(&mqttCtx->net, mqttCtx);
             if (rc == MQTT_CODE_CONTINUE) {
                 return rc;
             }
@@ -324,6 +324,12 @@ int awsiot_test(MQTTCtx *mqttCtx)
                 goto exit;
             }
             mqttCtx->client.ctx = mqttCtx;
+
+        #ifdef WOLFMQTT_V5
+            /* AWS broker only supports v3.1.1 client */
+            mqttCtx->client.protocol_level = MQTT_CONNECT_PROTOCOL_LEVEL_4;
+        #endif
+
 
             FALL_THROUGH;
         }
@@ -379,7 +385,8 @@ int awsiot_test(MQTTCtx *mqttCtx)
             if (rc == MQTT_CODE_CONTINUE) {
                 return rc;
             }
-            PRINTF("MQTT Connect: %s (%d)",
+            PRINTF("MQTT Connect: Proto (%s), %s (%d)",
+                MqttClient_GetProtocolVersionString(&mqttCtx->client),
                 MqttClient_ReturnCodeToString(rc), rc);
             if (rc != MQTT_CODE_SUCCESS) {
                 goto disconn;
@@ -422,10 +429,10 @@ int awsiot_test(MQTTCtx *mqttCtx)
 
             /* show subscribe results */
             for (i = 0; i < mqttCtx->subscribe.topic_count; i++) {
-                mqttCtx->topic = &mqttCtx->subscribe.topics[i];
+                MqttTopic *topic = &mqttCtx->subscribe.topics[i];
                 PRINTF("  Topic %s, Qos %u, Return Code %u",
-                    mqttCtx->topic->topic_filter,
-                    mqttCtx->topic->qos, mqttCtx->topic->return_code);
+                    topic->topic_filter,
+                    topic->qos, topic->return_code);
             }
 
             /* Publish Topic */
@@ -604,6 +611,8 @@ exit:
 
         /* Cleanup network */
         MqttClientNet_DeInit(&mqttCtx->net);
+
+        MqttClient_DeInit(&mqttCtx->client);
     }
 
     return rc;
@@ -680,13 +689,15 @@ exit:
         do {
             rc = awsiot_test(&mqttCtx);
         } while (rc == MQTT_CODE_CONTINUE);
+
+        mqtt_free_ctx(&mqttCtx);
     #else
         (void)argc;
         (void)argv;
 
         /* This example requires wolfSSL 3.9.1 or later with base64encode enabled */
         PRINTF("Example not compiled in!");
-        rc = EXIT_FAILURE;
+        rc = 0; /* return success, so make check passes with TLS disabled */
     #endif
 
         return (rc == 0) ? 0 : EXIT_FAILURE;
